@@ -54,9 +54,12 @@ academy update
 The updater refuses a dirty or diverged source tree, fetches and shows incoming changes, asks before
 continuing, backs up the installed app, performs a fast-forward-only pull, runs tests, applies
 transactionally, and checks the active app. A failed activation restores the previous app; a failed
-post-apply health check automatically rolls back to the exact pre-update backup.
+post-apply health check automatically rolls back to the exact pre-update backup. Each new app backup
+contains a paired snapshot of profile, XP state, and notes, which manual or automatic rollback
+restores with the matching code.
 
 Use `academy rollback` for a manual app rollback and `academy version` to show the installed version.
-Profile, XP, notes, and user settings live outside the app deployment and are not overwritten.
+Profile, XP, notes, and user settings live outside the app deployment and are not overwritten by a
+normal apply.
 
 Package-level changes should still go through a reviewed update to `install.sh`.

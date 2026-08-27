@@ -398,7 +398,7 @@ def menu():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", nargs="?", choices=["knowledge", "history", "commands", "_record-commands", "_complete-lab"])
+    parser.add_argument("command", nargs="?", choices=["knowledge", "history", "commands", "_record-commands"])
     parser.add_argument("details", nargs="*")
     parser.add_argument("--no-animation", action="store_true")
     args = parser.parse_args()
@@ -407,14 +407,6 @@ def main():
         if args.command == "_record-commands":
             if len(args.details) >= 2:
                 practice_commands(state, args.details[1:], args.details[0])
-        elif args.command == "_complete-lab":
-            quest = next((item for item in QUESTS if item["id"] in args.details and item.get("lab_quest")), None)
-            if not quest:
-                raise SystemExit("Unknown lab objective")
-            awarded, leveled = complete_activity(state, "quest", quest, verified=True)
-            console.print(f"[green]+{awarded} verified XP[/green]" if awarded else "Objective already rewarded; no duplicate XP.")
-            if leveled:
-                console.print("[bold cyan]Pip[/bold cyan] > Level up, xs.")
         elif args.command == "knowledge":
             knowledge_view(state)
         elif args.command == "history":

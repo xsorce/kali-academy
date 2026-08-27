@@ -20,6 +20,10 @@ Academy personal state is deliberately separate from the repo.
 ~/Academy/notes/
 ```
 
+JSON writes are locked, flushed, and atomically replaced. If profile or XP JSON is invalid, Academy
+renames the original to a timestamped `.corrupt-*` copy, prints a warning, and starts from safe
+defaults. Schema migrations also preserve a pre-migration state snapshot.
+
 ## Profile
 
 The default profile uses:

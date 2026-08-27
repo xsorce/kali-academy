@@ -8,7 +8,7 @@ while IFS= read -r -d '' file; do
     echo "bash syntax failed: $file"
     failed=1
   fi
-done < <(find "$ROOT/bin" "$ROOT/scripts" -type f ! -name '*.py' -print0; printf '%s\0' "$ROOT/install.sh" "$ROOT/apply.sh")
+done < <(find "$ROOT/bin" "$ROOT/scripts" -type f ! -name '*.py' ! -path '*/__pycache__/*' -print0; printf '%s\0' "$ROOT/install.sh" "$ROOT/apply.sh")
 
 python3 -m py_compile "$ROOT"/academy/*.py
 PYTHONPATH="$ROOT/academy" python3 -c 'import state; assert state.STATE_SCHEMA_VERSION == state.DEFAULT_STATE["schema_version"]'
@@ -34,6 +34,14 @@ grep -q 'git status --porcelain' "$ROOT/bin/academy-update"
 grep -q 'git pull --ff-only' "$ROOT/bin/academy-update"
 grep -q -- '--backup-only' "$ROOT/bin/academy-update"
 grep -q -- '--rollback --no-backup' "$ROOT/bin/academy-update"
+if grep -Rq -- '_complete-lab' "$ROOT/academy" "$ROOT/bin"; then echo "direct lab XP command remains"; failed=1; fi
+grep -q 'award_verified_xp "$id"' "$ROOT/bin/labctl"
+grep -q 'scripts/health-check.sh' "$ROOT/apply.sh" "$ROOT/bin/academy-update"
+grep -q 'learner-snapshot' "$ROOT/apply.sh"
+if grep -q 'zoxide starship' "$ROOT/install.sh"; then echo "starship is still required"; failed=1; fi
+if grep -q 'build_images rebuild' "$ROOT/bin/labctl"; then echo "normal reset still rebuilds images"; failed=1; fi
+grep -q '@sha256:' "$ROOT/labs/linux-target/Dockerfile"
+grep -q '@sha256:' "$ROOT/labs/net-tools/Dockerfile"
 
 if (( failed )); then exit 1; fi
 echo "Self-test passed."

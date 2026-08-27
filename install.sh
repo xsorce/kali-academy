@@ -15,7 +15,7 @@ sudo -v
 echo "[1/9] Packages"
 sudo apt update
 sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-  curl ca-certificates git gh jq fzf ripgrep bat tmux tree zoxide starship \
+  curl ca-certificates git gh jq fzf ripgrep bat tmux tree zoxide \
   htop btop fastfetch less nano vim shellcheck man-db \
   python3 python3-pip python3-rich build-essential rsync unzip p7zip-full \
   file lsof strace procps pciutils usbutils inxi lm-sensors \
@@ -24,6 +24,12 @@ sudo DEBIAN_FRONTEND=noninteractive apt install -y \
   smartmontools nvme-cli gparted testdisk gddrescue ntfs-3g exfatprogs ufw \
   dosfstools btrfs-progs xfsprogs e2fsprogs lvm2 mdadm parted hdparm \
   memtester dislocker chntpw docker.io
+
+if apt-cache show starship >/dev/null 2>&1; then
+  sudo DEBIAN_FRONTEND=noninteractive apt install -y starship || echo "Optional starship prompt was not installed."
+else
+  echo "Optional starship prompt is unavailable in this Kali release; continuing without it."
+fi
 
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER_NAME" || true
@@ -112,10 +118,11 @@ EOF
 fi
 
 echo "[9/9] Cyber range images"
-sudo docker pull debian:bookworm-slim
-sudo docker pull bkimminich/juice-shop:latest
-sudo docker build -t kali-academy-target "$ROOT/labs/linux-target"
-sudo docker build -t kali-academy-tools "$ROOT/labs/net-tools"
+LAB_VERSION="$(cat "$ROOT/VERSION")"
+sudo docker pull 'debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171'
+sudo docker pull 'bkimminich/juice-shop:v20.2.0@sha256:8739101ade29358abb5469ee66ae78e582c97ed0a5543a4ad102e5fa5193526b'
+sudo docker build -t "kali-academy-target:$LAB_VERSION" "$ROOT/labs/linux-target"
+sudo docker build -t "kali-academy-tools:$LAB_VERSION" "$ROOT/labs/net-tools"
 
 sudo chown -R "$USER_NAME":"$USER_NAME" \
   "$HOME_DIR/.config/kali-academy" "$HOME_DIR/.local/share/kali-academy" "$HOME_DIR/Academy" "$HOME_DIR/Projects"

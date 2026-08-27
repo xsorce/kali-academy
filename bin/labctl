@@ -5,10 +5,30 @@ TARGET=academy-target
 TOOLS=academy-tools
 WEB=academy-juice
 APP="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+LAB_VERSION="$(cat "$APP/VERSION")"
+TARGET_IMAGE="kali-academy-target:$LAB_VERSION"
+TOOLS_IMAGE="kali-academy-tools:$LAB_VERSION"
+JUICE_IMAGE='bkimminich/juice-shop:v20.2.0@sha256:8739101ade29358abb5469ee66ae78e582c97ed0a5543a4ad102e5fa5193526b'
 
 track() { command -v academy >/dev/null 2>&1 && academy _record-commands "$@" >/dev/null || true; }
 d() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker "$@"; fi; }
 exists() { d inspect "$1" >/dev/null 2>&1; }
+
+award_verified_xp() {
+  PYTHONPATH="$APP/academy" python3 - "$1" <<'PY'
+import sys
+from content import LAB_QUESTS
+from state import complete_activity, load_state
+
+item = next((quest for quest in LAB_QUESTS if quest["id"] == sys.argv[1]), None)
+if item is None:
+    raise SystemExit("Unknown verified lab objective")
+awarded, leveled = complete_activity(load_state(), "quest", item, verified=True)
+print(f"+{awarded} verified XP" if awarded else "Objective already rewarded; no duplicate XP.")
+if leveled:
+    print("Pip > Level up, xs.")
+PY
+}
 
 ensure_net() {
   if d network inspect "$NET" >/dev/null 2>&1; then
@@ -38,13 +58,8 @@ verify_isolation() {
 }
 
 build_images() {
-  if [[ "${1:-}" == rebuild ]]; then
-    d build -t kali-academy-target "$APP/labs/linux-target"
-    d build -t kali-academy-tools "$APP/labs/net-tools"
-  else
-    d image inspect kali-academy-target >/dev/null 2>&1 || d build -t kali-academy-target "$APP/labs/linux-target"
-    d image inspect kali-academy-tools >/dev/null 2>&1 || d build -t kali-academy-tools "$APP/labs/net-tools"
-  fi
+  d image inspect "$TARGET_IMAGE" >/dev/null 2>&1 || d build -t "$TARGET_IMAGE" "$APP/labs/linux-target"
+  d image inspect "$TOOLS_IMAGE" >/dev/null 2>&1 || d build -t "$TOOLS_IMAGE" "$APP/labs/net-tools"
 }
 
 scenario_for() {
@@ -59,8 +74,8 @@ scenario_for() {
 create_containers() {
   local scenario="$1"
   d rm -f "$TARGET" "$TOOLS" >/dev/null 2>&1 || true
-  d run -d --name "$TARGET" --network "$NET" -e "LAB_SCENARIO=$scenario" kali-academy-target >/dev/null
-  d run -d --name "$TOOLS" --network "$NET" --cap-add NET_ADMIN --cap-add NET_RAW kali-academy-tools >/dev/null
+  d run -d --name "$TARGET" --network "$NET" -e "LAB_SCENARIO=$scenario" "$TARGET_IMAGE" >/dev/null
+  d run -d --name "$TOOLS" --network "$NET" --cap-add NET_ADMIN --cap-add NET_RAW "$TOOLS_IMAGE" >/dev/null
 }
 
 start_lab() {
@@ -80,7 +95,7 @@ reset_lab() {
   d rm -f "$TARGET" "$TOOLS" "$WEB" >/dev/null 2>&1 || true
   d network rm "$NET" >/dev/null 2>&1 || true
   ensure_net
-  build_images rebuild
+  build_images
   create_containers "$scenario"
   verify_isolation >/dev/null
   echo "Pip > Recreated known '$scenario' state and verified isolation."
@@ -108,8 +123,8 @@ web_lab() {
   track "Web-security lab" docker
   ensure_net
   d rm -f "$WEB" >/dev/null 2>&1 || true
-  d image inspect bkimminich/juice-shop:latest >/dev/null 2>&1 || d pull bkimminich/juice-shop:latest
-  d run -d --name "$WEB" --network "$NET" -p 127.0.0.1:3000:3000 bkimminich/juice-shop:latest >/dev/null
+  d image inspect "$JUICE_IMAGE" >/dev/null 2>&1 || d pull "$JUICE_IMAGE"
+  d run -d --name "$WEB" --network "$NET" -p 127.0.0.1:3000:3000 "$JUICE_IMAGE" >/dev/null
   verify_isolation >/dev/null
   echo "Pip > Local-only vulnerable web lab: http://127.0.0.1:3000"
 }
@@ -163,7 +178,7 @@ run_quest() {
     8) [[ "$output" == *"Pip hid this file"* ]] ;;
   esac || { echo "Objective not verified."; return 1; }
   echo "Pip > Objective verified from lab evidence."
-  command -v academy >/dev/null 2>&1 && academy _complete-lab "$id" || echo "Academy XP unavailable until install/apply completes."
+  award_verified_xp "$id"
 }
 
 menu() {
