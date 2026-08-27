@@ -42,6 +42,20 @@ if grep -q 'zoxide starship' "$ROOT/install.sh"; then echo "starship is still re
 if grep -q 'build_images rebuild' "$ROOT/bin/labctl"; then echo "normal reset still rebuilds images"; failed=1; fi
 grep -q '@sha256:' "$ROOT/labs/linux-target/Dockerfile"
 grep -q '@sha256:' "$ROOT/labs/net-tools/Dockerfile"
+[[ "$(grep -c 'storage_preflight "' "$ROOT/install.sh")" -ge 6 ]] || { echo "installer storage preflights are incomplete"; failed=1; }
+grep -q 'OLLAMA_VERSION="0.33.1"' "$ROOT/install.sh"
+grep -q 'OLLAMA_INSTALL_SHA256=' "$ROOT/install.sh"
+grep -q '@openai/codex@\$CODEX_VERSION' "$ROOT/install.sh"
+grep -q 'QWEN_FAST_ID="359d7dd4bcda"' "$ROOT/install.sh"
+grep -q 'QWEN_LITE_ID="8f68893c685c"' "$ROOT/install.sh"
+grep -q '06c1097efce0' "$ROOT/bin/academy-models"
+grep -q 'Ollama is still unavailable after 20 readiness checks' "$ROOT/install.sh"
+grep -q 'HOME does not belong to or match the current user' "$ROOT/install.sh"
+if grep -Eq 'curl[^|]*\|[[:space:]]*(sh|bash)|kali-codex-64k|num_ctx 65536|tcpdump -ni eth0' "$ROOT/install.sh" "$ROOT/bin/academy-model" "$ROOT/bin/labctl" "$ROOT/models"/*; then
+  echo "an unguarded installer, 64K default, or hardcoded lab interface remains"; failed=1
+fi
+grep -q 'PARAMETER num_ctx 16384' "$ROOT/models/KaliCodex.Modelfile"
+grep -q 'lab_capture_interface' "$ROOT/bin/labctl"
 
 if (( failed )); then exit 1; fi
 echo "Self-test passed."

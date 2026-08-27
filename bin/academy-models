@@ -11,7 +11,14 @@ case "${1:-list}" in
   coder)
     echo "qwen3-coder:30b requires 19 GB disk; allow 24 GB free. RAM: 32 GB minimum."
     read -r -p "Download it? [y/N] " a
-    [[ "$a" =~ ^[Yy]$ ]] && ollama pull qwen3-coder:30b || echo "Cancelled."
+    if [[ "$a" =~ ^[Yy]$ ]]; then
+      ollama pull qwen3-coder:30b
+      [[ "$(ollama list | awk '$1 == "qwen3-coder:30b" {print $2; exit}')" == 06c1097efce0* ]] || {
+        echo "qwen3-coder:30b model ID verification failed." >&2; exit 1;
+      }
+    else
+      echo "Cancelled."
+    fi
     ;;
   *)
     echo "Usage: academy-models [list|smart|coder] (prefer: academy model ...)"

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "academy"))
 import state
 from content import COMMAND_BOOK, LAB_QUESTS, LESSONS, QUESTS, SIDE_MISSIONS
 from mascot import PIP_IDLE, PIP_STATES
-from app import challenge_passed, recommended_quest, skill_confidence
+from app import challenge_passed, numbered_item, recommended_quest, skill_confidence
 
 temporary = tempfile.TemporaryDirectory()
 root = Path(temporary.name)
@@ -29,6 +29,12 @@ assert {mission["concepts"][0] for mission in SIDE_MISSIONS} >= {"linux.proc", "
 assert all(mission["challenge"].get("answers") or mission["challenge"].get("answer_pattern") for mission in LESSONS + SIDE_MISSIONS)
 assert not any("\n" in part["command"] for mission in LESSONS + SIDE_MISSIONS for part in mission["steps"] + [mission["challenge"]])
 assert challenge_passed(LESSONS[2]["challenge"], 0, "3", "3")
+for invalid in ("0", "-1"):
+    try:
+        numbered_item(LESSONS, invalid)
+        raise AssertionError("non-positive lesson selection was accepted")
+    except ValueError:
+        pass
 assert [quest["lab_quest"] for quest in LAB_QUESTS] == list(range(1, 9))
 
 for required in ("ls", "grep", "chmod", "systemctl", "journalctl", "ip", "ss", "dig", "iw", "nmap", "tcpdump", "strace", "lsof", "git", "docker"):

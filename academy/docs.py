@@ -19,6 +19,7 @@ MAX_FILE_BYTES = 1_000_000
 MAX_TEXT_BYTES = 256 * 1024 * 1024
 MAX_CLONE_BYTES = 1_500_000_000
 MAX_TOTAL_BYTES = 3_000_000_000
+MIN_DOWNLOAD_FREE_BYTES = 10 * 1024 * 1024 * 1024
 TEXT_SUFFIXES = {".md", ".txt", ".rst", ".html", ".htm", ".info", ".gz"}
 STOP_WORDS = {"what", "when", "where", "which", "with", "from", "that", "this", "does", "have", "into", "your", "about", "how", "why"}
 
@@ -49,8 +50,15 @@ GENERATED_SOURCES = (
 def directory_size(path):
     return sum(file.stat().st_size for file in path.rglob("*") if file.is_file()) if path.exists() else 0
 
+def require_download_space(path=KNOWLEDGE_DIR, free_bytes=None):
+    path.mkdir(parents=True, exist_ok=True)
+    available = shutil.disk_usage(path).free if free_bytes is None else free_bytes
+    if available < MIN_DOWNLOAD_FREE_BYTES:
+        raise RuntimeError("Offline documentation update stopped: less than 10 GB free.")
+
 def sync_kali_docs():
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    require_download_space()
     if KALI_DOCS.exists():
         subprocess.run(["git", "-C", str(KALI_DOCS), "pull", "--ff-only"], check=True)
     else:

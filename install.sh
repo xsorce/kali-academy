@@ -1,18 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_NAME="${SUDO_USER:-$USER}"
-HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+OLLAMA_VERSION="0.33.1"
+OLLAMA_INSTALL_SHA256="25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f"
+CODEX_VERSION="0.150.1"
+QWEN_FAST_MODEL="qwen3:4b"
+QWEN_FAST_ID="359d7dd4bcda"
+QWEN_LITE_MODEL="qwen3:1.7b"
+QWEN_LITE_ID="8f68893c685c"
+OLLAMA_INSTALLER=""
+
+cleanup() { [[ -z "$OLLAMA_INSTALLER" ]] || rm -f -- "$OLLAMA_INSTALLER"; }
+trap cleanup EXIT
 
 if [[ "$EUID" -eq 0 ]]; then
   echo "Run as your normal Kali user. The script will request sudo."
   exit 1
 fi
 
+USER_NAME="$(id -un)"
+[[ "$USER_NAME" =~ ^[a-z_][a-z0-9_.-]*[$]?$ && "$(id -u "$USER_NAME")" -eq "$EUID" ]] || {
+  echo "Unable to validate the current non-root user." >&2; exit 1;
+}
+passwd_entry="$(getent passwd "$USER_NAME")"
+[[ -n "$passwd_entry" && "$(grep -c '^' <<< "$passwd_entry")" -eq 1 ]] || {
+  echo "Unable to resolve one passwd entry for $USER_NAME." >&2; exit 1;
+}
+HOME_DIR="$(cut -d: -f6 <<< "$passwd_entry")"
+[[ "$HOME_DIR" == /* && "$HOME_DIR" != / && "$HOME_DIR" != /root && -d "$HOME_DIR" ]] || {
+  echo "Unsafe home directory for $USER_NAME: $HOME_DIR" >&2; exit 1;
+}
+[[ "$(stat -c %u "$HOME_DIR")" -eq "$EUID" && "$(readlink -f "$HOME")" == "$(readlink -f "$HOME_DIR")" ]] || {
+  echo "HOME does not belong to or match the current user." >&2; exit 1;
+}
+
+storage_preflight() {
+  local label="$1" minimum_gb="$2" available_kb
+  available_kb="$(df -Pk -- "$HOME_DIR" | awk 'NR == 2 {print $4}')"
+  [[ "$available_kb" =~ ^[0-9]+$ ]] || { echo "Cannot determine free space before $label." >&2; exit 1; }
+  printf 'Storage preflight (%s): %.1f GB free; %.0f GB required.\n' "$label" "$((available_kb / 1024))e-3" "$minimum_gb"
+  if (( available_kb < 10 * 1024 * 1024 )); then
+    echo "CRITICAL: less than 10 GB free. Installation stopped before $label." >&2
+    exit 1
+  fi
+  (( available_kb >= minimum_gb * 1024 * 1024 )) || {
+    echo "Insufficient free space before $label; keep at least ${minimum_gb} GB free." >&2; exit 1;
+  }
+}
+
+verify_model() {
+  local model="$1" expected="$2" actual
+  actual="$(ollama list | awk -v model="$model" '$1 == model {print $2; exit}')"
+  [[ "$actual" == "$expected"* ]] || {
+    echo "Model verification failed for $model: expected ID $expected, got ${actual:-missing}." >&2; exit 1;
+  }
+}
+
 echo "== Kali Academy v2 installer =="
 sudo -v
 
 echo "[1/9] Packages"
+storage_preflight "APT packages" 20
 sudo apt update
 sudo DEBIAN_FRONTEND=noninteractive apt install -y \
   curl ca-certificates git gh jq fzf ripgrep bat tmux tree zoxide \
@@ -36,28 +84,41 @@ sudo usermod -aG docker "$USER_NAME" || true
 sudo usermod -aG wireshark "$USER_NAME" || true
 
 echo "[2/9] Ollama"
+storage_preflight "Ollama download" 12
 if ! command -v ollama >/dev/null 2>&1; then
-  curl -fsSL https://ollama.com/install.sh | sh
+  OLLAMA_INSTALLER="$(mktemp)"
+  curl -fL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/install.sh" -o "$OLLAMA_INSTALLER"
+  printf '%s  %s\n' "$OLLAMA_INSTALL_SHA256" "$OLLAMA_INSTALLER" | sha256sum -c -
+  echo "Installing reviewed Ollama release v$OLLAMA_VERSION from its verified installer."
+  OLLAMA_VERSION="$OLLAMA_VERSION" sh "$OLLAMA_INSTALLER"
 fi
 sudo systemctl enable --now ollama
-for _ in $(seq 1 20); do ollama list >/dev/null 2>&1 && break; sleep 1; done
+ollama_ready=0
+for _ in $(seq 1 20); do
+  if ollama list >/dev/null 2>&1; then ollama_ready=1; break; fi
+  sleep 1
+done
+(( ollama_ready )) || { echo "Ollama is still unavailable after 20 readiness checks; installation stopped." >&2; exit 1; }
 
 echo "[3/9] Qwen"
-ollama pull qwen3:4b
-ollama pull qwen3:1.7b
+storage_preflight "default Qwen models" 15
+ollama pull "$QWEN_FAST_MODEL"
+verify_model "$QWEN_FAST_MODEL" "$QWEN_FAST_ID"
+ollama pull "$QWEN_LITE_MODEL"
+verify_model "$QWEN_LITE_MODEL" "$QWEN_LITE_ID"
 ollama create kali-tutor -f "$ROOT/models/KaliTutor.Modelfile"
 ollama create kali-tutor-lite -f "$ROOT/models/KaliTutorLite.Modelfile"
-ollama create kali-codex-32k -f "$ROOT/models/KaliCodex32.Modelfile"
-ollama create kali-codex-64k -f "$ROOT/models/KaliCodex64.Modelfile"
+ollama create kali-codex -f "$ROOT/models/KaliCodex.Modelfile"
 
 echo "[4/9] Codex CLI"
-if ! command -v codex >/dev/null 2>&1; then
+storage_preflight "Codex CLI/npm" 11
+if ! command -v codex >/dev/null 2>&1 || [[ "$(codex --version 2>/dev/null || true)" != "codex-cli $CODEX_VERSION" ]]; then
   if command -v npm >/dev/null 2>&1; then
-    sudo npm install -g @openai/codex
+    sudo npm install -g "@openai/codex@$CODEX_VERSION"
   else
     echo "Node/npm not found; installing nodejs/npm for Codex CLI."
     sudo apt install -y nodejs npm
-    sudo npm install -g @openai/codex
+    sudo npm install -g "@openai/codex@$CODEX_VERSION"
   fi
 fi
 
@@ -65,6 +126,7 @@ echo "[5/9] Academy files"
 "$ROOT/apply.sh"
 
 echo "[6/9] Offline documentation"
+storage_preflight "offline documentation" 13
 if ! python3 "$ROOT/academy/docs.py" update; then
   echo "Kali docs download unavailable; indexing installed local docs only."
   python3 "$ROOT/academy/docs.py" build
@@ -118,6 +180,7 @@ EOF
 fi
 
 echo "[9/9] Cyber range images"
+storage_preflight "Docker lab images" 20
 LAB_VERSION="$(cat "$ROOT/VERSION")"
 sudo docker pull 'debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171'
 sudo docker pull 'bkimminich/juice-shop:v20.2.0@sha256:8739101ade29358abb5469ee66ae78e582c97ed0a5543a4ad102e5fa5193526b'

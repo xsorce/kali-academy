@@ -15,6 +15,8 @@ command -v ollama >/dev/null
 ollama list >/dev/null
 ollama show qwen3:4b >/dev/null
 ollama show qwen3:1.7b >/dev/null
+[[ "$(ollama list | awk '$1 == "qwen3:4b" {print $2; exit}')" == 359d7dd4bcda* ]]
+[[ "$(ollama list | awk '$1 == "qwen3:1.7b" {print $2; exit}')" == 8f68893c685c* ]]
 bash "$ROOT/bin/academy-model" resolve tutor >/dev/null
 bash "$ROOT/bin/academy-model" resolve codex >/dev/null
 command -v codex >/dev/null

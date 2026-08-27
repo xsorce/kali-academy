@@ -113,6 +113,12 @@ def show_lessons(state):
         )
     console.print(table)
 
+def numbered_item(items, raw):
+    number = int(raw)
+    if number <= 0:
+        raise ValueError("selection must be positive")
+    return items[number - 1]
+
 def mission_command(part, profile, state, related_lesson):
     command = part["command"]
     console.print(f"[bold green]$ {command}[/bold green]")
@@ -184,7 +190,7 @@ def lesson_menu(profile, state):
     if not raw:
         return
     try:
-        lesson = LESSONS[int(raw) - 1]
+        lesson = numbered_item(LESSONS, raw)
     except Exception:
         pip("That lesson number doesn't exist.", profile, "confused")
         return
@@ -209,7 +215,7 @@ def quest_menu(profile, state):
     if not raw:
         return
     try:
-        q = QUESTS[int(raw)-1]
+        q = numbered_item(QUESTS, raw)
     except Exception:
         pip("Unknown quest.", profile, "confused")
         return

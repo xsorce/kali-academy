@@ -16,7 +16,7 @@ export PATH="$TEMP/bin:$PATH" ACADEMY_MODEL_CONFIG_DIR="$TEMP/config"
 export ACADEMY_TEST_MODELS="$TEMP/models" ACADEMY_TEST_PULL="$TEMP/pull"
 SMART='hf.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED:Q4_K_M'
 
-printf '%s\n' kali-tutor kali-tutor-lite kali-codex-32k kali-codex-64k qwen3:1.7b > "$ACADEMY_TEST_MODELS"
+printf '%s\n' kali-tutor kali-tutor-lite kali-codex qwen3:1.7b > "$ACADEMY_TEST_MODELS"
 [[ "$(ACADEMY_MEM_KB=16000000 bash "$ROOT/bin/academy-model" resolve tutor)" == kali-tutor ]]
 printf '%s\n' "$SMART" >> "$ACADEMY_TEST_MODELS"
 [[ "$(ACADEMY_MEM_KB=32000000 bash "$ROOT/bin/academy-model" resolve tutor)" == "$SMART" ]]
@@ -26,8 +26,15 @@ bash "$ROOT/bin/academy-model" set smart >/dev/null
 [[ "$(ACADEMY_MEM_KB=4000000 bash "$ROOT/bin/academy-model" resolve codex)" == qwen3:1.7b ]]
 bash "$ROOT/bin/academy-model" set fast codex >/dev/null
 [[ "$(ACADEMY_MEM_KB=32000000 bash "$ROOT/bin/academy-model" resolve tutor)" == "$SMART" ]]
-[[ "$(ACADEMY_MEM_KB=32000000 bash "$ROOT/bin/academy-model" resolve codex)" == kali-codex-64k ]]
+[[ "$(ACADEMY_MEM_KB=32000000 bash "$ROOT/bin/academy-model" resolve codex)" == kali-codex ]]
 grep -vF "$SMART" "$ACADEMY_TEST_MODELS" > "$TEMP/models.new" && mv "$TEMP/models.new" "$ACADEMY_TEST_MODELS"
+if printf 'y\n' | ACADEMY_MEM_KB=32000000 ACADEMY_FREE_KB=9000000 bash "$ROOT/bin/academy-model" install smart >/dev/null 2>&1; then
+  echo "Smart install ignored the disk gate." >&2; exit 1
+fi
+if printf 'y\n' | ACADEMY_MEM_KB=8000000 ACADEMY_FREE_KB=30000000 bash "$ROOT/bin/academy-model" install smart >/dev/null 2>&1; then
+  echo "Smart install ignored the RAM gate." >&2; exit 1
+fi
+[[ ! -e "$ACADEMY_TEST_PULL" ]]
 printf 'y\n' | ACADEMY_MEM_KB=32000000 ACADEMY_FREE_KB=30000000 bash "$ROOT/bin/academy-model" install smart >/dev/null
 [[ "$(cat "$ACADEMY_TEST_PULL")" == "$SMART" ]]
 status="$(KALI_ACADEMY_ROOT="$ROOT" ACADEMY_MEM_KB=32000000 bash "$ROOT/bin/academy" model status)"

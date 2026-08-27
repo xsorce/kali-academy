@@ -30,6 +30,15 @@ if leveled:
 PY
 }
 
+lab_capture_interface() {
+  local iface
+  iface="$(d exec "$TOOLS" bash -lc 'target="$(getent hosts academy-target | head -1 | cut -d" " -f1)"; ip route get "$target" | sed -n "s/.* dev \([^ ]*\).*/\1/p" | head -1')"
+  [[ "$iface" =~ ^[A-Za-z0-9_.:-]+$ ]] && d exec "$TOOLS" ip link show "$iface" >/dev/null || {
+    echo "Could not derive the isolated lab capture interface." >&2; return 1;
+  }
+  printf '%s\n' "$iface"
+}
+
 ensure_net() {
   if d network inspect "$NET" >/dev/null 2>&1; then
     [[ "$(d network inspect -f '{{.Internal}}' "$NET")" == true ]] || {
@@ -140,7 +149,7 @@ enter_lab() {
 }
 
 run_quest() {
-  local number="${1:-}" command explanation container="$TOOLS" output id tools
+  local number="${1:-}" command explanation container="$TOOLS" output id tools capture_iface
   [[ "$number" =~ ^[1-8]$ ]] || { echo "Use: labctl quest 1..8"; exit 1; }
   reset_lab "$number"
   verify_isolation >/dev/null  # Every quest stops here unless the range is internal-only.
@@ -150,7 +159,7 @@ run_quest() {
     3) id=lab-scan; tools="nmap"; command="nmap -Pn academy-target"; explanation="Nmap reveals which TCP endpoints answer. An open port is a listening service, not automatically a vulnerability." ;;
     4) id=lab-http; tools="curl"; command="curl -s http://academy-target:8080"; explanation="curl reveals the application response carried over HTTP." ;;
     5) id=lab-headers; tools="curl"; command="curl -sI http://academy-target:8080"; explanation="Response headers reveal status and server metadata without fetching the page body." ;;
-    6) id=lab-capture; tools="tcpdump ping"; command="timeout 5 tcpdump -ni eth0 -c 2 icmp & ping -c 1 academy-target; wait"; explanation="tcpdump reveals the request and reply packets created by your own isolated ping." ;;
+    6) capture_iface="$(lab_capture_interface)"; id=lab-capture; tools="tcpdump ping"; command="timeout 5 tcpdump -ni $capture_iface -c 2 icmp & ping -c 1 academy-target; wait"; explanation="tcpdump reveals the request and reply packets created by your own isolated ping." ;;
     7) id=lab-broken-http; tools="nmap"; command="nmap -Pn -p 8080 academy-target"; explanation="A closed port shows the host is reachable but no process is listening there. This target is intentionally stopped." ;;
     8) id=lab-permissions; tools="chmod cat"; container="$TARGET"; command="chmod 600 /challenge/hidden.txt && cat /challenge/hidden.txt"; explanation="chmod changes access policy; 600 gives only the owner read/write access." ;;
   esac

@@ -33,10 +33,8 @@ resolve() {
     [[ "$scope" == tutor ]] && first_installed kali-tutor-lite qwen3:1.7b || first_installed qwen3:1.7b kali-tutor-lite
   elif [[ "$scope" == tutor ]]; then
     first_installed kali-tutor qwen3:4b kali-tutor-lite qwen3:1.7b
-  elif (( mem >= 12000000 )); then
-    first_installed kali-codex-64k kali-codex-32k qwen3:4b qwen3:1.7b
   else
-    first_installed kali-codex-32k qwen3:4b qwen3:1.7b
+    first_installed kali-codex qwen3:4b qwen3:1.7b
   fi
 }
 
