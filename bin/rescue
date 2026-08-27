@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+track() { command -v academy >/dev/null 2>&1 && academy _record-commands "Rescue Bay" "$@" >/dev/null || true; }
+heading() { echo; echo "=== $1 ==="; }
+pip() { echo; echo "Pip > $*"; }
+run() {
+  local label="$1"; shift
+  heading "$label"
+  if command -v "$1" >/dev/null 2>&1; then "$@" || true; else echo "$1 is not installed."; fi
+}
+finish() {
+  heading "Findings"
+  echo "$1"
+  echo "No repair or disk write was performed."
+  pip "Next diagnostic step: $2"
+}
+recovery_disk_warning() {
+  echo "WARNING: The 128 GB Academy SSD usually cannot hold a full image of a larger drive."
+  echo "Use a separate healthy external recovery disk with more free space than the source data/image."
+}
+read_device() {
+  local prompt="$1" value
+  read -r -p "$prompt" value
+  [[ "$value" =~ ^/dev/[A-Za-z0-9._-]+$ && -b "$value" ]] || {
+    echo "Enter one exact block device shown by lsblk (for example /dev/sda)." >&2
+    return 1
+  }
+  printf '%s' "$value"
+}
+
+inventory() {
+  track lsblk inxi
+  run "Disks and filesystems" lsblk -o NAME,MODEL,SERIAL,SIZE,TRAN,TYPE,FSTYPE,FSUSE%,MOUNTPOINTS
+  run "Hardware summary" inxi -Fxxxz
+}
+
+slow_pc() {
+  pip "Slowness can come from CPU load, memory pressure, full storage, I/O errors, or one busy process. We inspect before changing anything."
+  inventory
+  run "Load and memory" bash -lc 'uptime; free -h; ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -12'
+  run "Filesystem capacity" df -hT
+  track journalctl dmesg
+  run "Current-boot warnings" journalctl -b -p warning --no-pager -n 120
+  run "Kernel warnings" sudo dmesg -T --level=err,warn
+  local root_use memory
+  root_use="$(df -P / 2>/dev/null | awk 'NR==2 {print $5}')"
+  memory="$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 " used of " $2}')"
+  finish "Root filesystem use: ${root_use:-unknown}. Memory: ${memory:-unknown}. Review the busiest processes and repeated log errors above." "If logs suggest storage errors, choose 'possible failing disk'; if crashes suggest RAM, use the confirmed memory test."
+}
+
+will_not_boot() {
+  pip "A non-booting PC needs evidence about firmware visibility, partitions, filesystems, and the last failed boot. We do not mount or repair anything automatically."
+  inventory
+  track journalctl dmesg
+  run "Previous-boot warnings" journalctl -b -1 -p warning --no-pager -n 200
+  run "Boot and storage kernel messages" sudo dmesg -T --level=err,warn
+  run "Known boot entries" bash -lc 'command -v efibootmgr >/dev/null && sudo efibootmgr -v || echo "efibootmgr unavailable or system is not using UEFI"'
+  finish "Disk layout, hardware visibility, and available previous-boot evidence are shown above. Missing disks point below the bootloader; visible filesystems move the investigation toward boot configuration or logs." "Save or photograph exact firmware and boot errors, then inspect the affected system from live media without writing to its disks."
+}
+
+failing_disk() {
+  pip "For a possibly failing disk, minimize reads and avoid repair writes. SMART/NVMe counters help distinguish media trouble from filesystem trouble."
+  recovery_disk_warning
+  track lsblk smartctl nvme dmesg
+  run "Block-device identity" lsblk -d -o NAME,MODEL,SERIAL,SIZE,TRAN
+  run "SMART-capable devices" sudo smartctl --scan-open
+  run "NVMe controllers" sudo nvme list
+  local device
+  device="$(read_device 'Exact device to inspect read-only (blank cancels): ')" || { pip "Cancelled; no device was selected."; return; }
+  if [[ "$device" == /dev/nvme* ]]; then
+    run "Selected NVMe health" sudo nvme smart-log "$device"
+  else
+    run "Selected SMART health" sudo smartctl -x "$device"
+  fi
+  run "Recent I/O errors" sudo dmesg -T --level=err,warn
+  finish "Health data was collected only for $device. Pay attention to failed health status, media/data-integrity errors, reallocated or pending sectors, and repeated kernel I/O resets." "If failure evidence exists, stop stressing the source and plan a ddrescue image to a separate larger recovery disk before filesystem repair."
+}
+
+windows_filesystem() {
+  pip "Windows filesystem symptoms may come from NTFS state, unsafe shutdown, BitLocker, or failing hardware. Identification comes before repair."
+  recovery_disk_warning
+  track lsblk
+  run "Windows-capable filesystems" lsblk -o NAME,MODEL,SIZE,TYPE,FSTYPE,FSVER,LABEL,UUID,MOUNTPOINTS
+  local device
+  device="$(read_device 'Exact NTFS partition for no-action inspection (blank cancels): ')" || { pip "Cancelled; no partition was selected."; return; }
+  run "NTFS no-action check" sudo ntfsfix -n "$device"
+  finish "The no-action NTFS report for $device is above. It may identify dirty state or basic metadata trouble, but it is not a substitute for Windows chkdsk and no repair was attempted." "Check drive health before any repair; use TestDisk only for partition/filesystem investigation and keep its Write action off unless you have a verified image."
+}
+
+network_problem() {
+  pip "Network diagnosis follows link -> address -> route -> DNS. Each layer answers a different question, so we inspect them in order."
+  track inxi ip resolvectl journalctl
+  run "Network hardware and driver" inxi -Nxxxz
+  run "Links and addresses" ip -brief address
+  run "Routes" ip route
+  run "DNS configuration" resolvectl status
+  run "NetworkManager state" nmcli general status
+  run "Current network warnings" journalctl -b -u NetworkManager -p warning --no-pager -n 100
+  local route dns
+  route="$(ip route show default 2>/dev/null | head -1)"
+  dns="$(resolvectl dns 2>/dev/null | head -1)"
+  finish "Default route: ${route:-missing}. DNS: ${dns:-unavailable}. A missing link/address is below routing; a working route with failed names points toward DNS." "Fix the first missing layer only after recording its driver and NetworkManager log evidence; use wifi-lab doctor for wireless-specific details."
+}
+
+unknown_hardware() {
+  pip "Unknown hardware is identified by bus IDs first, then the bound kernel driver and its log messages."
+  track inxi dmesg journalctl
+  inventory
+  run "PCI devices and drivers" lspci -nnk
+  run "USB device and driver tree" bash -lc 'lsusb; echo; lsusb -t'
+  run "Current kernel warnings" sudo dmesg -T --level=err,warn
+  run "Hardware-related journal warnings" journalctl -b -k -p warning --no-pager -n 160
+  finish "The stable PCI/USB IDs, current driver bindings, and kernel warnings are above. 'Unknown' names alone are less useful than vendor:product IDs and exact error lines." "Record the ID and driver, then compare it with the relevant kernel module documentation or firmware package before changing configuration."
+}
+
+memory_test() {
+  echo "memtester writes test patterns only to allocated RAM, not disks, but it can heavily load the machine."
+  read -r -p "Memory to test in MiB (for example 256, blank cancels): " amount
+  [[ -z "$amount" ]] && return
+  [[ "$amount" =~ ^[1-9][0-9]*$ ]] || { echo "Enter a whole MiB value."; return 1; }
+  read -r -p "Run one memtester pass using ${amount} MiB? [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || return
+  track memtester
+  sudo memtester "${amount}M" 1
+}
+
+recovery_tools() {
+  while true; do
+    cat <<'EOF'
+
+RECOVERY TOOLS — THESE CAN WRITE DATA
+1 Memory test (RAM stress, confirmed size)
+2 TestDisk (interactive; keep Write off during inspection)
+3 PhotoRec (recovered files require a separate destination disk)
+4 Plan a ddrescue command (display only; never executed)
+5 GParted (interactive partition editor)
+b Back
+EOF
+    read -r -p "> " choice
+    case "$choice" in
+      1) memory_test ;;
+      2) recovery_disk_warning; echo "TestDisk can write partition changes."; read -r -p "Launch interactive TestDisk? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] && { track testdisk; sudo testdisk; } ;;
+      3) recovery_disk_warning; echo "PhotoRec writes recovered files to the destination you select."; read -r -p "Launch interactive PhotoRec? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] && { track photorec; sudo photorec; } ;;
+      4) ddrescue_plan ;;
+      5) echo "GParted can alter or destroy partitions. Rescue Bay will not choose a disk or operation."; read -r -p "Launch interactive GParted? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] && { track gparted; sudo gparted; } ;;
+      b|B) return ;;
+    esac
+  done
+}
+
+ddrescue_plan() {
+  recovery_disk_warning
+  echo "ddrescue reads a source and writes a destination plus mapfile. Rescue Bay never guesses these or executes the command."
+  run "Choose by model, serial, and size" lsblk -o NAME,MODEL,SERIAL,SIZE,TRAN,TYPE,MOUNTPOINTS
+  local source destination mapfile
+  read -r -p "Exact source device: " source
+  read -r -p "Exact destination image/drive on separate recovery storage: " destination
+  read -r -p "Exact persistent mapfile path: " mapfile
+  [[ "$source" =~ ^/dev/[A-Za-z0-9._-]+$ && -b "$source" && -n "$destination" && -n "$mapfile" ]] || {
+    echo "Plan rejected: source must be an exact block device and destination/mapfile must be explicit."; return 1;
+  }
+  printf 'Review only; NOT EXECUTED:\nsudo ddrescue -f -n -- %q %q %q\n' "$source" "$destination" "$mapfile"
+  pip "Before running anything, independently verify serial numbers, destination capacity, mounts, and that source and destination are not reversed."
+}
+
+main_menu() {
+  while true; do
+    cat <<'EOF'
+
+     ( o>
+    ///\
+    \V_/_
+  PIP'S RESCUE BAY
+1 PC is very slow
+2 PC will not boot
+3 Possible failing disk
+4 Windows filesystem problem
+5 Network problem
+6 Unknown hardware problem
+7 Recovery tools (explicit confirmation)
+q Quit
+EOF
+    read -r -p "> " choice
+    case "$choice" in
+      1) slow_pc ;;
+      2) will_not_boot ;;
+      3) failing_disk ;;
+      4) windows_filesystem ;;
+      5) network_problem ;;
+      6) unknown_hardware ;;
+      7) recovery_tools ;;
+      q|Q) return ;;
+    esac
+  done
+}
+
+main_menu

@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+NET=academy-lab-net
+TARGET=academy-target
+TOOLS=academy-tools
+WEB=academy-juice
+APP="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+
+track() { command -v academy >/dev/null 2>&1 && academy _record-commands "$@" >/dev/null || true; }
+d() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker "$@"; fi; }
+exists() { d inspect "$1" >/dev/null 2>&1; }
+
+ensure_net() {
+  if d network inspect "$NET" >/dev/null 2>&1; then
+    [[ "$(d network inspect -f '{{.Internal}}' "$NET")" == true ]] || {
+      echo "Pip > STOP: $NET exists but is not internal. Run labctl reset." >&2
+      return 1
+    }
+  else
+    d network create --internal "$NET" >/dev/null
+  fi
+}
+
+verify_isolation() {
+  local container networks
+  [[ "$(d network inspect -f '{{.Internal}}' "$NET" 2>/dev/null || true)" == true ]] || {
+    echo "FAIL: $NET is missing or not internal."; return 1;
+  }
+  for container in "$TARGET" "$TOOLS" "$WEB"; do
+    exists "$container" || continue
+    networks="$(d inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' "$container")"
+    [[ "$networks" == "$NET " ]] || { echo "FAIL: $container is attached outside $NET."; return 1; }
+  done
+  if exists "$TARGET" && [[ -n "$(d port "$TARGET" 2>/dev/null)" ]]; then
+    echo "FAIL: training target publishes a host/LAN port."; return 1
+  fi
+  echo "PASS: internal network only; training target has no host/LAN port."
+}
+
+build_images() {
+  if [[ "${1:-}" == rebuild ]]; then
+    d build -t kali-academy-target "$APP/labs/linux-target"
+    d build -t kali-academy-tools "$APP/labs/net-tools"
+  else
+    d image inspect kali-academy-target >/dev/null 2>&1 || d build -t kali-academy-target "$APP/labs/linux-target"
+    d image inspect kali-academy-tools >/dev/null 2>&1 || d build -t kali-academy-tools "$APP/labs/net-tools"
+  fi
+}
+
+scenario_for() {
+  case "${1:-clean}" in
+    7|broken-http) echo broken-http ;;
+    8|permissions) echo permissions ;;
+    clean|[1-6]) echo clean ;;
+    *) echo "Unknown quest/scenario: $1" >&2; return 1 ;;
+  esac
+}
+
+create_containers() {
+  local scenario="$1"
+  d rm -f "$TARGET" "$TOOLS" >/dev/null 2>&1 || true
+  d run -d --name "$TARGET" --network "$NET" -e "LAB_SCENARIO=$scenario" kali-academy-target >/dev/null
+  d run -d --name "$TOOLS" --network "$NET" --cap-add NET_ADMIN --cap-add NET_RAW kali-academy-tools >/dev/null
+}
+
+start_lab() {
+  local scenario
+  scenario="$(scenario_for "${1:-clean}")"
+  track "Cyber range" docker
+  ensure_net
+  build_images
+  create_containers "$scenario"
+  verify_isolation >/dev/null
+  echo "Pip > Lab started in '$scenario' state on Docker internal network: $NET"
+}
+
+reset_lab() {
+  local scenario
+  scenario="$(scenario_for "${1:-clean}")"
+  d rm -f "$TARGET" "$TOOLS" "$WEB" >/dev/null 2>&1 || true
+  d network rm "$NET" >/dev/null 2>&1 || true
+  ensure_net
+  build_images rebuild
+  create_containers "$scenario"
+  verify_isolation >/dev/null
+  echo "Pip > Recreated known '$scenario' state and verified isolation."
+}
+
+stop_lab() {
+  track "Cyber range" docker
+  d rm -f "$TARGET" "$TOOLS" "$WEB" >/dev/null 2>&1 || true
+  d network rm "$NET" >/dev/null 2>&1 || true
+  echo "Pip > Range stopped."
+}
+
+status() {
+  if d network inspect "$NET" >/dev/null 2>&1; then
+    echo "Network: $NET (internal=$(d network inspect -f '{{.Internal}}' "$NET"))"
+  else
+    echo "Network: stopped"
+  fi
+  for container in "$TARGET" "$TOOLS" "$WEB"; do
+    exists "$container" && echo "$container: $(d inspect -f '{{.State.Status}}' "$container")" || true
+  done
+}
+
+web_lab() {
+  track "Web-security lab" docker
+  ensure_net
+  d rm -f "$WEB" >/dev/null 2>&1 || true
+  d image inspect bkimminich/juice-shop:latest >/dev/null 2>&1 || d pull bkimminich/juice-shop:latest
+  d run -d --name "$WEB" --network "$NET" -p 127.0.0.1:3000:3000 bkimminich/juice-shop:latest >/dev/null
+  verify_isolation >/dev/null
+  echo "Pip > Local-only vulnerable web lab: http://127.0.0.1:3000"
+}
+
+enter_lab() {
+  track "Cyber range" docker
+  verify_isolation >/dev/null
+  case "${1:-}" in
+    tools) d exec -it "$TOOLS" bash ;;
+    target) d exec -it "$TARGET" bash ;;
+    *) echo "Use: labctl enter tools|target"; exit 1 ;;
+  esac
+}
+
+run_quest() {
+  local number="${1:-}" command explanation container="$TOOLS" output id tools
+  [[ "$number" =~ ^[1-8]$ ]] || { echo "Use: labctl quest 1..8"; exit 1; }
+  reset_lab "$number"
+  verify_isolation >/dev/null  # Every quest stops here unless the range is internal-only.
+  case "$number" in
+    1) id=lab-discover-ip; tools="getent"; command="getent hosts academy-target"; explanation="Name lookup reveals the target address assigned inside this private Docker network." ;;
+    2) id=lab-ping; tools="ping"; command="ping -c 1 academy-target"; explanation="Ping reveals ICMP reachability and round-trip time; it does not prove every service works." ;;
+    3) id=lab-scan; tools="nmap"; command="nmap -Pn academy-target"; explanation="Nmap reveals which TCP endpoints answer. An open port is a listening service, not automatically a vulnerability." ;;
+    4) id=lab-http; tools="curl"; command="curl -s http://academy-target:8080"; explanation="curl reveals the application response carried over HTTP." ;;
+    5) id=lab-headers; tools="curl"; command="curl -sI http://academy-target:8080"; explanation="Response headers reveal status and server metadata without fetching the page body." ;;
+    6) id=lab-capture; tools="tcpdump ping"; command="timeout 5 tcpdump -ni eth0 -c 2 icmp & ping -c 1 academy-target; wait"; explanation="tcpdump reveals the request and reply packets created by your own isolated ping." ;;
+    7) id=lab-broken-http; tools="nmap"; command="nmap -Pn -p 8080 academy-target"; explanation="A closed port shows the host is reachable but no process is listening there. This target is intentionally stopped." ;;
+    8) id=lab-permissions; tools="chmod cat"; container="$TARGET"; command="chmod 600 /challenge/hidden.txt && cat /challenge/hidden.txt"; explanation="chmod changes access policy; 600 gives only the owner read/write access." ;;
+  esac
+  echo "Pip > $explanation"
+  echo "Type the command to run it inside the disposable '$container' container, or type back."
+  while true; do
+    read -r -p '$ ' typed
+    [[ "$typed" == back ]] && return
+    [[ "$typed" == "$command" ]] && break
+    echo "Pip > Type the shown command exactly; Academy runs only this safe lab command."
+  done
+  track "Cyber range" $tools
+  if output="$(d exec "$container" bash -lc "$command" 2>&1)"; then :; else
+    echo "$output"; echo "Objective not verified."; return 1
+  fi
+  echo "$output"
+  case "$number" in
+    1) [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]] ;;
+    2) [[ "$output" == *"1 received"* ]] ;;
+    3) [[ "$output" =~ 8080/tcp[[:space:]]+open ]] ;;
+    4) [[ "$output" == *"Kali Academy target"* ]] ;;
+    5) [[ "$output" == HTTP/* ]] ;;
+    6) [[ "$output" == *"ICMP echo request"* && "$output" == *"ICMP echo reply"* ]] ;;
+    7) [[ "$output" =~ 8080/tcp[[:space:]]+closed ]] ;;
+    8) [[ "$output" == *"Pip hid this file"* ]] ;;
+  esac || { echo "Objective not verified."; return 1; }
+  echo "Pip > Objective verified from lab evidence."
+  command -v academy >/dev/null 2>&1 && academy _complete-lab "$id" || echo "Academy XP unavailable until install/apply completes."
+}
+
+menu() {
+  while true; do
+    cat <<'EOF'
+PIP'S ISOLATED CYBER RANGE
+1-8  Start a verified beginner mission
+s    Status
+v    Verify isolation
+r    Reset clean range
+e    Enter tools container
+x    Stop range
+q    Quit
+EOF
+    read -r -p "> " choice
+    case "$choice" in
+      [1-8]) run_quest "$choice" ;;
+      s|S) status ;;
+      v|V) verify_isolation ;;
+      r|R) reset_lab ;;
+      e|E) enter_lab tools ;;
+      x|X) stop_lab ;;
+      q|Q) return ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  status) status ;;
+  verify-isolation) verify_isolation ;;
+  start) start_lab "${2:-clean}" ;;
+  quest) run_quest "${2:-}" ;;
+  web) web_lab ;;
+  enter) enter_lab "${2:-}" ;;
+  reset) reset_lab "${2:-clean}" ;;
+  stop) stop_lab ;;
+  *) echo "Usage: labctl [status|verify-isolation|start [QUEST]|quest 1..8|reset [QUEST]|stop|enter tools|target|web]"; exit 1 ;;
+esac

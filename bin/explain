@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if (($#)); then
+  input="$*"
+elif [[ ! -t 0 ]]; then
+  input="$(cat)"
+else
+  echo 'Usage: explain "command or output"'
+  echo '   or: command | explain'
+  exit 1
+fi
+exec ai "Explain this to xs as a Linux/Kali tutor.
+Tell me what it is, why I would use it, what important flags/fields mean, what to look for in the
+output, and one related concept worth learning next:
+
+$input"

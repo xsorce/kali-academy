@@ -1,0 +1,24 @@
+{
+  "display_name": "xs",
+  "mascot_name": "Pip",
+  "experience": "basic-linux",
+  "interests": [
+    "linux",
+    "cybersecurity",
+    "networking",
+    "servers",
+    "hardware"
+  ],
+  "learning_style": "hands-on",
+  "animations": true,
+  "tutor_mode": "coach",
+  "known_concepts": [
+    "basic terminal navigation"
+  ],
+  "learning_goals": [
+    "understand Linux instead of memorizing commands",
+    "learn networking and Wi-Fi diagnostics",
+    "learn cybersecurity safely in labs",
+    "be able to diagnose PCs"
+  ]
+}

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+case "${1:-}" in
+  storage) shift; exec bash "$ROOT/bin/academy-storage" "$@" ;;
+  model) shift; exec bash "$ROOT/bin/academy-model" "$@" ;;
+  privacy) shift; exec bash "$ROOT/bin/academy-privacy" "$@" ;;
+  update) shift; exec bash "$ROOT/bin/academy-update" "$@" ;;
+  rollback) shift; exec bash "$ROOT/bin/academy-rollback" "$@" ;;
+  version) printf 'Kali Academy %s\n' "$(cat "$ROOT/VERSION")"; exit 0 ;;
+esac
+exec python3 "$ROOT/academy/app.py" "$@"

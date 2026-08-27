@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+BACKUP_DIR="$HOME/Academy/backups"
+
+confirm() {
+  local answer
+  read -r -p "$1 [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+status() {
+  local free_kb
+  echo "=== Kali Academy storage ==="
+  df -h --output=size,avail,target "$HOME" | tail -n 2
+  echo
+  echo "Academy usage:"
+  du -sch "$HOME/.local/share/kali-academy" "$HOME/Academy" 2>/dev/null | tail -n 1 || true
+  du -sh "$HOME/.ollama" 2>/dev/null | sed 's/$/  Ollama/' || true
+  free_kb="$(df -Pk "$HOME" | awk 'NR == 2 {print $4}')"
+  if (( free_kb < 10 * 1024 * 1024 )); then
+    echo "CRITICAL: less than 10 GB free. Clean up before downloads or updates."
+  elif (( free_kb < 20 * 1024 * 1024 )); then
+    echo "WARNING: less than 20 GB free."
+  fi
+  echo "Use another external disk for recovery disk images."
+  echo "Cleanup: academy storage cleanup [docker|packages|backups|models]"
+}
+
+cleanup_backups() {
+  local backups=()
+  mapfile -t backups < <(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name 'app-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +3 | cut -d' ' -f2-)
+  ((${#backups[@]})) || { echo "No old Academy backups to remove."; return; }
+  printf 'Remove %d old Academy backup(s), keeping the newest two?\n' "${#backups[@]}"
+  if confirm "Continue?"; then rm -rf -- "${backups[@]}"; else echo "Cancelled."; fi
+}
+
+cleanup_models() {
+  local model
+  ollama list
+  read -r -p "Exact unused model name to remove (blank cancels): " model
+  [[ -z "$model" ]] && { echo "Cancelled."; return; }
+  [[ "$model" =~ ^[A-Za-z0-9._:/-]+$ && "$model" != -* ]] || { echo "Invalid model name." >&2; return 1; }
+  if confirm "Remove Ollama model $model?"; then ollama rm "$model"; else echo "Cancelled."; fi
+}
+
+case "${1:-status}" in
+  status) status ;;
+  cleanup)
+    case "${2:-}" in
+      docker) if confirm "Remove unused Docker images?"; then docker image prune -f; else echo "Cancelled."; fi ;;
+      packages) if confirm "Clear the downloaded package cache?"; then sudo apt clean; else echo "Cancelled."; fi ;;
+      backups) cleanup_backups ;;
+      models) cleanup_models ;;
+      *) echo "Usage: academy storage cleanup [docker|packages|backups|models]"; exit 1 ;;
+    esac
+    ;;
+  *) echo "Usage: academy storage [status|cleanup]"; exit 1 ;;
+esac

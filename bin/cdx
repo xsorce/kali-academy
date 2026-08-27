@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+model="$(bash "$ROOT/bin/academy-model" resolve codex)"
+echo "Pip > Local Codex using $model in $PWD"
+exec codex --oss --local-provider ollama -m "$model" --sandbox workspace-write --ask-for-approval on-request "$@"

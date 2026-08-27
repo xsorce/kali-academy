@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REPO="${KALI_ACADEMY_REPO:-$HOME/Projects/kali-academy}"
+INSTALLED="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+
+[[ -d "$REPO/.git" ]] || { echo "Academy source repo not found at: $REPO" >&2; exit 1; }
+[[ -x "$INSTALLED/apply.sh" ]] || { echo "Installed Academy apply script not found." >&2; exit 1; }
+cd "$REPO"
+
+echo "[1/10] Checking working tree"
+[[ -z "$(git status --porcelain)" ]] || {
+  git status --short
+  echo "Update stopped: commit, stash, or remove working-tree changes first." >&2
+  exit 1
+}
+upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" || {
+  echo "Current branch has no upstream remote." >&2; exit 1;
+}
+remote="${upstream%%/*}"
+remote_branch="${upstream#*/}"
+
+echo "[2/10] Fetching $remote"
+git fetch "$remote"
+git merge-base --is-ancestor HEAD "$upstream" || {
+  echo "Update stopped: local and remote history are not fast-forward compatible." >&2
+  exit 1
+}
+incoming="$(git rev-list --count HEAD.."$upstream")"
+current_version="$(cat VERSION 2>/dev/null || echo unknown)"
+incoming_version="$(git show "$upstream":VERSION 2>/dev/null || echo unknown)"
+
+echo "[3/10] Incoming changes"
+echo "Version: $current_version -> $incoming_version"
+if (( incoming == 0 )); then
+  echo "Academy is already current."
+  exit 0
+fi
+git log --oneline --decorate HEAD.."$upstream"
+git diff --stat HEAD.."$upstream"
+
+echo "[4/10] Permission"
+read -r -p "Back up and apply these $incoming commit(s)? [y/N] " answer
+[[ "$answer" =~ ^[Yy]$ ]] || { echo "Update cancelled."; exit 0; }
+
+echo "[5/10] Backing up installed Academy"
+backup_output="$(bash "$INSTALLED/apply.sh" --backup-only)"
+echo "$backup_output"
+backup="$(sed -n 's/^Backup: //p' <<<"$backup_output" | tail -n 1)"
+[[ -d "$backup" ]] || { echo "Update stopped: backup was not created." >&2; exit 1; }
+
+echo "[6/10] Fast-forwarding source"
+git pull --ff-only "$remote" "$remote_branch"
+
+echo "[7/10] Testing source"
+if ! bash "$REPO/scripts/self-test.sh"; then
+  echo "Source self-test failed; installed Academy was not changed. Backup: $backup" >&2
+  exit 1
+fi
+
+echo "[8/10] Applying transactionally"
+if ! bash "$REPO/apply.sh" --no-backup; then
+  echo "Apply failed; its transactional activation restored the previous app. Backup: $backup" >&2
+  exit 1
+fi
+
+echo "[9/10] Checking active app health"
+if ! bash "$INSTALLED/scripts/self-test.sh"; then
+  echo "Active health check failed; restoring the pre-update backup." >&2
+  ACADEMY_ROLLBACK_BACKUP="$backup" bash "$REPO/apply.sh" --rollback --no-backup
+  exit 1
+fi
+
+echo "[10/10] Complete"
+echo "Kali Academy updated to $(cat "$INSTALLED/VERSION")."
+echo "Profile, XP, notes, and user settings were not touched."

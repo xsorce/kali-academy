@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Pip > Your password will be handled by Linux's passwd program."
+echo "Pip > It is never written into the Kali Academy repo or profile."
+exec passwd

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$HOME/Academy/workspace"
+cd "$HOME/Academy/workspace"
+exec cdx "$@"

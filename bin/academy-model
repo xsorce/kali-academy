@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SMART_MODEL='hf.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED:Q4_K_M'
+CONFIG_DIR="${ACADEMY_MODEL_CONFIG_DIR:-$HOME/.config/kali-academy}"
+CONFIG_FILE="$CONFIG_DIR/models.conf"
+MIN_SMART_RAM_KB=$((24 * 1024 * 1024))
+MIN_SMART_FREE_KB=$((20 * 1024 * 1024))
+
+memory_kb() { printf '%s\n' "${ACADEMY_MEM_KB:-$(awk '/MemTotal/ {print $2}' /proc/meminfo)}"; }
+free_kb() { printf '%s\n' "${ACADEMY_FREE_KB:-$(df -Pk "$HOME" | awk 'NR == 2 {print $4}')}"; }
+has_model() { ollama show "$1" >/dev/null 2>&1; }
+preference() {
+  local scope="$1" value="auto"
+  [[ -f "$CONFIG_FILE" ]] && value="$(sed -n "s/^${scope}=//p" "$CONFIG_FILE" | tail -n 1)"
+  [[ "$value" =~ ^(auto|smart|fast|lite)$ ]] || value=auto
+  printf '%s\n' "$value"
+}
+smart_ready() { (( $(memory_kb) >= MIN_SMART_RAM_KB )) && has_model "$SMART_MODEL"; }
+first_installed() {
+  local model
+  for model in "$@"; do has_model "$model" && { printf '%s\n' "$model"; return; }; done
+  printf '%s\n' "$1"
+}
+
+resolve() {
+  local scope="${1:?tutor or codex required}" pref mem
+  [[ "$scope" =~ ^(tutor|codex)$ ]] || { echo "Unknown model scope: $scope" >&2; return 1; }
+  pref="$(preference "$scope")"
+  mem="$(memory_kb)"
+  if [[ "$pref" =~ ^(auto|smart)$ ]] && smart_ready; then printf '%s\n' "$SMART_MODEL"; return; fi
+  if [[ "$pref" == lite || "$mem" -lt 6000000 ]]; then
+    [[ "$scope" == tutor ]] && first_installed kali-tutor-lite qwen3:1.7b || first_installed qwen3:1.7b kali-tutor-lite
+  elif [[ "$scope" == tutor ]]; then
+    first_installed kali-tutor qwen3:4b kali-tutor-lite qwen3:1.7b
+  elif (( mem >= 12000000 )); then
+    first_installed kali-codex-64k kali-codex-32k qwen3:4b qwen3:1.7b
+  else
+    first_installed kali-codex-32k qwen3:4b qwen3:1.7b
+  fi
+}
+
+set_preference() {
+  local mode="${1:-}" scope="${2:-both}" tutor codex stage
+  [[ "$mode" =~ ^(auto|smart|fast|lite)$ ]] || { echo "Use: academy model set [auto|smart|fast|lite] [tutor|codex]" >&2; return 1; }
+  [[ "$scope" =~ ^(both|tutor|codex)$ ]] || { echo "Scope must be tutor or codex." >&2; return 1; }
+  tutor="$(preference tutor)"; codex="$(preference codex)"
+  [[ "$scope" == both || "$scope" == tutor ]] && tutor="$mode"
+  [[ "$scope" == both || "$scope" == codex ]] && codex="$mode"
+  mkdir -p "$CONFIG_DIR"
+  stage="$(mktemp "$CONFIG_DIR/.models.conf.XXXXXX")"
+  printf 'tutor=%s\ncodex=%s\n' "$tutor" "$codex" > "$stage"
+  mv "$stage" "$CONFIG_FILE"
+  echo "Tutor preference: $tutor"
+  echo "Codex preference: $codex"
+  [[ "$mode" != smart || smart_ready ]] || echo "Smart is unavailable or RAM is below 24 GB; Academy will use a fallback."
+}
+
+install_smart() {
+  local disk ram answer
+  disk="$(free_kb)"; ram="$(memory_kb)"
+  echo "Smart model: $SMART_MODEL"
+  echo "Download requirement: approximately 16.8 GB."
+  echo "Preflight: at least 20 GB free disk and 24 GB RAM required."
+  printf 'Detected: %.1f GB free disk; %.1f GB RAM.\n' "$((disk / 1024))e-3" "$((ram / 1024))e-3"
+  (( disk >= MIN_SMART_FREE_KB )) || { echo "Not installed: insufficient free disk. Normal 4B/1.7B fallbacks remain active." >&2; return 1; }
+  (( ram >= MIN_SMART_RAM_KB )) || { echo "Not installed: insufficient RAM. Normal 4B/1.7B fallbacks remain active." >&2; return 1; }
+  has_model "$SMART_MODEL" && { echo "Smart model is already installed."; return; }
+  read -r -p "Download the optional 27B model now? [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Cancelled."; return; }
+  ollama pull "$SMART_MODEL"
+}
+
+status() {
+  echo "Tutor preference: $(preference tutor)"
+  echo "Tutor selected: $(resolve tutor)"
+  echo "Codex preference: $(preference codex)"
+  echo "Codex selected: $(resolve codex)"
+  echo "Smart model: $SMART_MODEL"
+  if has_model "$SMART_MODEL"; then echo "Smart installed: yes"; else echo "Smart installed: no (optional ~16.8 GB download)"; fi
+  if (( $(memory_kb) >= MIN_SMART_RAM_KB )); then echo "Smart RAM check: ready"; else echo "Smart RAM check: insufficient; fallback active"; fi
+}
+
+case "${1:-status}" in
+  resolve) resolve "${2:-}" ;;
+  install) [[ "${2:-}" == smart ]] && install_smart || { echo "Usage: academy model install smart"; exit 1; } ;;
+  set) set_preference "${2:-}" "${3:-both}" ;;
+  status) status ;;
+  *) echo "Usage: academy model [install smart|set MODE [tutor|codex]|status]"; exit 1 ;;
+esac

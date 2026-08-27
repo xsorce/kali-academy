@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+track() { command -v academy >/dev/null 2>&1 && academy _record-commands "$@" >/dev/null || true; }
+passive() { python3 "$ROOT/academy/wifi.py" "$1"; }
+valid_iface() { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; }
+
+status() {
+  track "Wi-Fi lab" lsusb iw ethtool ip resolvectl
+  passive status
+}
+
+scan() {
+  track "Wi-Fi lab" nmcli
+  passive scan
+}
+
+doctor() {
+  track "Wi-Fi lab" lsusb iw ethtool ip resolvectl rfkill nmcli
+  passive doctor
+}
+
+learn() {
+  track "Wi-Fi lab" lsusb iw ethtool ip resolvectl
+  passive learn
+}
+
+monitor_start() {
+  iface="${1:-}"
+  [[ -n "$iface" ]] || { echo "Usage: wifi-lab monitor-start <iface>"; exit 1; }
+  valid_iface "$iface" || { echo "Invalid interface name."; exit 1; }
+  echo "This can interrupt your normal Wi-Fi connection."
+  echo "Use only on your network or one whose owner explicitly authorized testing."
+  read -r -p "Type AUTHORIZED: " ans
+  [[ "$ans" == "AUTHORIZED" ]] || exit 1
+  sudo airmon-ng check kill
+  sudo airmon-ng start "$iface"
+  echo "Passive observation only. No deauthentication or password cracking."
+  echo "When finished: wifi-lab monitor-stop <monitor-interface>"
+}
+
+monitor_stop() {
+  iface="${1:-}"
+  [[ -n "$iface" ]] || { echo "Usage: wifi-lab monitor-stop <iface>"; exit 1; }
+  valid_iface "$iface" || { echo "Invalid interface name."; exit 1; }
+  sudo airmon-ng stop "$iface" || true
+  sudo systemctl restart NetworkManager
+}
+
+menu() {
+  while true; do
+    cat <<'EOF'
+PIP'S WI-FI LAB
+1  Status: hardware to network
+2  Show cached nearby channels/signals
+3  Diagnose current networking
+4  Learn the Wi-Fi device chain
+5  Authorized passive monitor mode
+6  Stop monitor mode / restore NetworkManager
+q  Quit
+EOF
+    read -r -p "> " p
+    case "$p" in
+      1) status ;;
+      2) scan ;;
+      3) doctor ;;
+      4) learn ;;
+      5) status; read -r -p "Interface: " i; monitor_start "$i" ;;
+      6) read -r -p "Monitor interface: " i; monitor_stop "$i" ;;
+      q|Q) return ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  status|interfaces) status ;;
+  scan) scan ;;
+  doctor) doctor ;;
+  learn) learn ;;
+  monitor-start) monitor_start "${2:-}" ;;
+  monitor-stop) monitor_stop "${2:-}" ;;
+  *) echo "Usage: wifi-lab [status|scan|doctor|learn|monitor-start IFACE|monitor-stop IFACE]"; exit 1 ;;
+esac

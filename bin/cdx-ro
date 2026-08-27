@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+model="$(bash "$ROOT/bin/academy-model" resolve codex)"
+exec codex --oss --local-provider ollama -m "$model" --sandbox read-only --ask-for-approval on-request "$@"

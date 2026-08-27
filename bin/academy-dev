@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="${KALI_ACADEMY_REPO:-$HOME/Projects/kali-academy}"
+if [[ ! -d "$repo/.git" ]]; then
+  echo "Academy source repo not found at: $repo"
+  echo "Clone your GitHub repo there, or set KALI_ACADEMY_REPO=/path/to/repo"
+  exit 1
+fi
+cd "$repo"
+cat <<'EOF'
+Pip > Opening Codex in the Academy source, xs.
+  - Review git diff.
+  - Test first.
+  - Commit before applying.
+  - System-level changes need explicit approval.
+EOF
+exec cdx "$@"

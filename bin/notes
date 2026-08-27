@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+exec python3 "$ROOT/academy/notes.py" "$@"

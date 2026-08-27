@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${KALI_ACADEMY_ROOT:-$HOME/.local/share/kali-academy/app}"
+case "${1:-list}" in
+  list)
+    exec bash "$ROOT/bin/academy-model" status
+    ;;
+  smart)
+    exec bash "$ROOT/bin/academy-model" install smart
+    ;;
+  coder)
+    echo "qwen3-coder:30b requires 19 GB disk; allow 24 GB free. RAM: 32 GB minimum."
+    read -r -p "Download it? [y/N] " a
+    [[ "$a" =~ ^[Yy]$ ]] && ollama pull qwen3-coder:30b || echo "Cancelled."
+    ;;
+  *)
+    echo "Usage: academy-models [list|smart|coder] (prefer: academy model ...)"
+    exit 1
+    ;;
+esac

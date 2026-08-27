@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "=== Kali Academy health ==="
+echo "Host: $(hostname)"
+echo "Kernel: $(uname -r)"
+echo
+echo "--- memory ---"
+free -h
+echo
+echo "--- disks ---"
+lsblk -o NAME,MODEL,SERIAL,SIZE,TRAN,FSTYPE,MOUNTPOINTS
+echo
+echo "--- root ---"
+findmnt /
+df -h /
+echo
+echo "--- wireless ---"
+iw dev 2>/dev/null || true
+echo
+echo "--- USB ---"
+lsusb -t 2>/dev/null || true
+echo
+echo "--- Ollama ---"
+systemctl is-active ollama 2>/dev/null || true
+ollama list 2>/dev/null || true
+echo
+echo "--- Codex ---"
+codex --version 2>/dev/null || true
+echo
+echo "--- Docker ---"
+systemctl is-active docker 2>/dev/null || true

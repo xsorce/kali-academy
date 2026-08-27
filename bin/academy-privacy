@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+STATE_DIR="$HOME/.local/share/kali-academy/privacy"
+NM_FILE="/etc/NetworkManager/conf.d/90-kali-academy-privacy.conf"
+
+pip() { echo "Pip > $*"; }
+confirm() { local answer; read -r -p "$1 [y/N] " answer; [[ "$answer" =~ ^[Yy]$ ]]; }
+has() { command -v "$1" >/dev/null 2>&1; }
+active_ssh() {
+  [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}" ]] ||
+    { has ss && [[ -n "$(ss -Htn state established '( sport = :22 )' 2>/dev/null)" ]]; }
+}
+tailscale_active() { has tailscale && tailscale status >/dev/null 2>&1; }
+unit_exists() { has systemctl && [[ "$(systemctl show -p LoadState --value "$1" 2>/dev/null)" != not-found ]]; }
+unit_state() {
+  local unit="$1"
+  printf '%s\n%s\n' "$(systemctl is-enabled "$unit" 2>/dev/null || true)" "$(systemctl is-active "$unit" 2>/dev/null || true)"
+}
+privacy_notice() {
+  pip "Privacy Mode reduces exposure to devices on the local network. It does not make this device invisible or anonymous."
+}
+
+firewall_status() {
+  local output=""
+  if has ufw; then
+    output="$(sudo -n ufw status verbose 2>/dev/null || true)"
+    [[ -n "$output" ]] && printf '%s\n' "$output" || echo "UFW installed; detailed status needs sudo permission."
+  elif has nft; then
+    output="$(sudo -n nft list ruleset 2>/dev/null || true)"
+    [[ -n "$output" ]] && printf 'nftables rules loaded: %s lines\n' "$(wc -l <<<"$output")" || echo "nftables present; detailed status needs sudo permission."
+  else
+    echo "No supported firewall manager found."
+  fi
+}
+
+mac_status() {
+  local device connection policy="default/per-connection"
+  [[ -f "$NM_FILE" ]] && policy="Privacy Mode random on reconnect"
+  if has nmcli; then
+    device="$(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2=="wifi" && $3=="connected" {print $1; exit}')"
+    if [[ -n "$device" ]]; then
+      connection="$(nmcli -g GENERAL.CONNECTION device show "$device" 2>/dev/null || true)"
+      policy="$(nmcli -g 802-11-wireless.cloned-mac-address connection show "$connection" 2>/dev/null || true)"
+      [[ -n "$policy" && "$policy" != -- ]] || policy="default/per-connection"
+    fi
+  fi
+  echo "$policy"
+}
+
+service_line() {
+  local label="$1"; shift
+  local found=0 unit
+  printf '%-18s' "$label:"
+  for unit in "$@"; do
+    unit_exists "$unit" || continue
+    found=1
+    printf ' %s=%s/%s' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)" "$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  done
+  (( found )) && echo || echo " not installed"
+}
+
+privacy_score() {
+  local score=0 fw=""
+  [[ -f "$NM_FILE" ]] && ((score+=20))
+  if has ufw; then fw="$(sudo -n ufw status verbose 2>/dev/null || true)"; fi
+  [[ "$fw" == *"Status: active"* && "$fw" == *"deny (incoming)"* ]] && ((score+=30))
+  if ! unit_exists avahi-daemon.service || ! systemctl is-active --quiet avahi-daemon.service; then ((score+=15)); fi
+  if ! unit_exists smbd.service && ! unit_exists nmbd.service; then
+    ((score+=15))
+  elif ! systemctl is-active --quiet smbd.service && ! systemctl is-active --quiet nmbd.service; then
+    ((score+=15))
+  fi
+  if ! has ss || [[ -z "$(ss -H -lnt 'sport = :22' 2>/dev/null)" ]]; then ((score+=20)); fi
+  echo "$score"
+}
+
+status() {
+  local default_device="" wifi_device="" ssid="unavailable"
+  privacy_notice
+  echo
+  echo "Hostname: $(hostname 2>/dev/null || echo unavailable)"
+  echo "MAC randomization: $(mac_status)"
+  if has ip; then default_device="$(ip route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"; fi
+  if has nmcli; then
+    wifi_device="$(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2=="wifi" && $3=="connected" {print $1; exit}')"
+    [[ -n "$wifi_device" ]] && has iw && ssid="$(iw dev "$wifi_device" link 2>/dev/null | sed -n 's/^\s*SSID: //p' | head -1)"
+  fi
+  echo "Active interface: ${default_device:-${wifi_device:-none}}; SSID: ${ssid:-unavailable}"
+  echo "Default route: $(has ip && ip route show default 2>/dev/null | head -1 || echo unavailable)"
+  echo "DNS:"
+  if has resolvectl; then resolvectl dns 2>/dev/null || echo "  unavailable"; else echo "  resolvectl unavailable"; fi
+  echo
+  echo "Firewall:"
+  firewall_status | sed 's/^/  /'
+  echo
+  echo "Listening ports/services:"
+  if has ss; then ss -lntup 2>/dev/null || true; else echo "  ss unavailable"; fi
+  echo
+  service_line "Avahi/mDNS" avahi-daemon.service avahi-daemon.socket
+  service_line "Samba" smbd.service nmbd.service
+  service_line "SSH" ssh.service ssh.socket
+  echo "SSH LAN listeners: $(has ss && ss -H -lnt 'sport = :22' 2>/dev/null | paste -sd ';' - || echo unavailable)"
+  echo "Active SSH session: $(active_ssh && echo yes || echo no)"
+  if has tailscale; then
+    echo "Tailscale: $(tailscale status 2>/dev/null | head -1 || echo installed/inactive)"
+  else
+    echo "Tailscale: not installed"
+  fi
+  echo
+  echo "Privacy score: $(privacy_score)/100 (conservative local-exposure checks only)"
+}
+
+record_and_stop_service() {
+  local unit="$1" state_file="$STATE_DIR/service-$1"
+  unit_exists "$unit" || return 0
+  unit_state "$unit" > "$state_file"
+  sudo systemctl disable --now "$unit" >/dev/null 2>&1 || sudo systemctl stop "$unit"
+}
+
+offer_services() {
+  local label="$1" impact="$2"; shift 2
+  local present=() unit
+  for unit in "$@"; do unit_exists "$unit" && present+=("$unit"); done
+  ((${#present[@]})) || { pip "$label is not installed; nothing to change."; return; }
+  echo "$impact"
+  if confirm "Disable $label now and record its prior state?"; then
+    for unit in "${present[@]}"; do record_and_stop_service "$unit"; done
+  fi
+}
+
+offer_mac() {
+  if [[ -e "$NM_FILE" ]]; then
+    pip "The managed NetworkManager file already exists; leaving it unchanged."
+    return
+  fi
+  echo "MAC randomization reduces stable Wi-Fi hardware identification. It applies on a future reconnect; NetworkManager will not be restarted now."
+  if confirm "Enable randomized Wi-Fi MAC addresses for future connections?"; then
+    sudo install -d -m 0755 /etc/NetworkManager/conf.d
+    printf '%s\n' '# Managed by Kali Academy Privacy Mode' '[device]' 'wifi.scan-rand-mac-address=yes' '' '[connection]' 'wifi.cloned-mac-address=random' |
+      sudo tee "$NM_FILE" >/dev/null
+    sudo chmod 0644 "$NM_FILE"
+    sha256sum "$NM_FILE" | awk '{print $1}' > "$STATE_DIR/mac.sha256"
+  fi
+}
+
+offer_firewall() {
+  local before incoming tailscale_rule=0
+  has ufw || { pip "UFW is unavailable. Run the reviewed installer to add the lightweight firewall manager."; return; }
+  if active_ssh; then
+    pip "An active SSH session exists, so Privacy Mode will not change the firewall."
+    return
+  fi
+  echo "UFW will deny new unsolicited inbound connections while allowing outbound traffic. Existing explicit rules remain."
+  has tailscale && echo "Tailscale is installed; Privacy Mode will explicitly allow inbound traffic on tailscale0."
+  confirm "Apply the inbound firewall policy?" || return
+  before="$(sudo ufw status verbose)"
+  incoming="$(sed -n 's/^Default: \([a-z]*\) (incoming).*/\1/p' <<<"$before")"
+  if [[ ! "$incoming" =~ ^(allow|deny|reject)$ ]]; then
+    case "$(sudo sed -n 's/^DEFAULT_INPUT_POLICY="\([A-Z]*\)"/\1/p' /etc/default/ufw 2>/dev/null)" in
+      ACCEPT) incoming=allow ;;
+      REJECT) incoming=reject ;;
+      *) incoming=deny ;;
+    esac
+  fi
+  {
+    echo "active=$([[ "$before" == *"Status: active"* ]] && echo yes || echo no)"
+    echo "incoming=$incoming"
+    echo "tailscale_rule=0"
+  } > "$STATE_DIR/firewall.state"
+  if (has tailscale || ip link show tailscale0 >/dev/null 2>&1) && ! grep -q tailscale0 <<<"$before"; then
+    sudo ufw allow in on tailscale0 comment 'Kali Academy Privacy Mode'
+    tailscale_rule=1
+  fi
+  sudo ufw default deny incoming
+  [[ "$before" == *"Status: active"* ]] || sudo ufw --force enable
+  sed -i "s/tailscale_rule=0/tailscale_rule=$tailscale_rule/" "$STATE_DIR/firewall.state"
+}
+
+offer_ssh() {
+  if active_ssh; then pip "Active SSH detected; SSH service settings will not change."; return; fi
+  if has tailscale; then pip "Tailscale is installed; SSH is left available so Tailscale-based SSH workflows are not broken."; return; fi
+  offer_services "SSH" "Disabling SSH removes future remote shell access until Privacy Mode is turned off." ssh.service ssh.socket
+}
+
+offer_hostname() {
+  local current
+  current="$(hostnamectl --static 2>/dev/null || hostname)"
+  [[ "$current" == kali-academy ]] && { pip "Hostname is already generic."; return; }
+  echo "A generic hostname reveals less personal information on local networks, but local bookmarks may need the new name."
+  if confirm "Change hostname '$current' to 'kali-academy'?"; then
+    printf '%s\n' "$current" > "$STATE_DIR/hostname.previous"
+    sudo hostnamectl set-hostname kali-academy
+  fi
+}
+
+privacy_on() {
+  privacy_notice
+  mkdir -p "$STATE_DIR"
+  if [[ -e "$STATE_DIR/active" ]]; then pip "Privacy Mode already has recorded changes."; status; return; fi
+  if find "$STATE_DIR" -mindepth 1 -maxdepth 1 -type f | grep -q .; then
+    pip "Unrestored Privacy Mode state exists. Run 'academy privacy off' first."; return 1
+  fi
+  touch "$STATE_DIR/active"
+  echo "Each change below is optional and has its own confirmation. Rollback state contains settings only—never passwords, Wi-Fi keys, tokens, or private keys."
+  offer_mac
+  offer_firewall
+  offer_services "Avahi/mDNS" "Disabling Avahi reduces local service/name advertisements; .local discovery and printer discovery may stop." avahi-daemon.service avahi-daemon.socket
+  offer_services "Samba" "Disabling Samba stops Windows-style file/printer sharing from this device." smbd.service nmbd.service
+  offer_ssh
+  offer_hostname
+  pip "Privacy Mode choices recorded. Reconnect Wi-Fi later to apply MAC randomization."
+  status
+}
+
+restore_service() {
+  local state_file="$1" unit enabled active current_enabled current_active expected_enabled
+  unit="${state_file##*/service-}"
+  mapfile -t saved < "$state_file"
+  enabled="${saved[0]:-}"; active="${saved[1]:-}"
+  current_enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  current_active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  expected_enabled="$enabled"; [[ "$enabled" == enabled ]] && expected_enabled=disabled
+  if [[ "$current_enabled" != "$expected_enabled" || "$current_active" != inactive ]]; then
+    pip "$unit changed after Privacy Mode; leaving its current state untouched."
+    return
+  fi
+  [[ "$enabled" == enabled ]] && sudo systemctl enable "$unit" >/dev/null
+  [[ "$active" == active ]] && sudo systemctl start "$unit" || true
+}
+
+restore_firewall() {
+  local was_active incoming tailscale_rule current
+  [[ -f "$STATE_DIR/firewall.state" ]] || return
+  has ufw || { pip "UFW is unavailable; firewall rollback state was not applied."; return; }
+  was_active="$(sed -n 's/^active=//p' "$STATE_DIR/firewall.state")"
+  incoming="$(sed -n 's/^incoming=//p' "$STATE_DIR/firewall.state")"
+  tailscale_rule="$(sed -n 's/^tailscale_rule=//p' "$STATE_DIR/firewall.state")"
+  current="$(sudo ufw status verbose 2>/dev/null || true)"
+  [[ "$tailscale_rule" == 1 ]] && sudo ufw --force delete allow in on tailscale0 >/dev/null || true
+  if [[ "$current" != *"deny (incoming)"* ]]; then
+    pip "Firewall policy changed after Privacy Mode; leaving it untouched."
+    return
+  fi
+  [[ "$incoming" =~ ^(allow|deny|reject)$ ]] && sudo ufw default "$incoming" incoming
+  [[ "$was_active" == no ]] && sudo ufw --force disable
+}
+
+privacy_off() {
+  privacy_notice
+  [[ -e "$STATE_DIR/active" ]] || { pip "No active Privacy Mode rollback state found."; return; }
+  echo "Only settings recorded as changed by Privacy Mode will be considered. Later user changes are left untouched."
+  confirm "Restore recorded pre-Privacy Mode settings?" || { echo "Cancelled."; return; }
+  restore_firewall
+  local state_file current_hash saved_hash
+  for state_file in "$STATE_DIR"/service-*; do [[ -e "$state_file" ]] && restore_service "$state_file"; done
+  if [[ -f "$STATE_DIR/mac.sha256" && -f "$NM_FILE" ]]; then
+    current_hash="$(sha256sum "$NM_FILE" | awk '{print $1}')"; saved_hash="$(cat "$STATE_DIR/mac.sha256")"
+    if [[ "$current_hash" == "$saved_hash" ]]; then sudo rm -- "$NM_FILE"; else pip "MAC config was edited later; leaving it untouched."; fi
+  fi
+  if [[ -f "$STATE_DIR/hostname.previous" ]]; then
+    if [[ "$(hostnamectl --static 2>/dev/null || hostname)" == kali-academy ]]; then
+      sudo hostnamectl set-hostname "$(cat "$STATE_DIR/hostname.previous")"
+    else
+      pip "Hostname changed after Privacy Mode; leaving it untouched."
+    fi
+  fi
+  rm -f -- "$STATE_DIR"/active "$STATE_DIR"/firewall.state "$STATE_DIR"/mac.sha256 "$STATE_DIR"/hostname.previous "$STATE_DIR"/service-*
+  pip "Recorded Privacy Mode changes were restored. NetworkManager was not restarted."
+  status
+}
+
+case "${1:-status}" in
+  status) status ;;
+  on) privacy_on ;;
+  off) privacy_off ;;
+  *) echo "Usage: academy privacy [status|on|off]"; exit 1 ;;
+esac
