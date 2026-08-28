@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OLLAMA_VERSION="0.33.1"
+# Reviewed Linux-safe pin. Bump only after verifying the release has working Linux assets.
+OLLAMA_VERSION="0.32.14"
 OLLAMA_INSTALL_SHA256="25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f"
-CODEX_VERSION="0.150.1"
+# Reviewed Linux-safe pin. Bump only after verifying working Linux native packages exist.
+CODEX_VERSION="0.149.1"
 QWEN_FAST_MODEL="qwen3:4b"
 QWEN_FAST_ID="359d7dd4bcda"
 QWEN_LITE_MODEL="qwen3:1.7b"

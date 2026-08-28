@@ -43,7 +43,8 @@ if grep -q 'build_images rebuild' "$ROOT/bin/labctl"; then echo "normal reset st
 grep -q '@sha256:' "$ROOT/labs/linux-target/Dockerfile"
 grep -q '@sha256:' "$ROOT/labs/net-tools/Dockerfile"
 [[ "$(grep -c 'storage_preflight "' "$ROOT/install.sh")" -ge 6 ]] || { echo "installer storage preflights are incomplete"; failed=1; }
-grep -q 'OLLAMA_VERSION="0.33.1"' "$ROOT/install.sh"
+grep -q 'OLLAMA_VERSION="0.32.14"' "$ROOT/install.sh"
+grep -q 'CODEX_VERSION="0.149.1"' "$ROOT/install.sh"
 grep -q 'OLLAMA_INSTALL_SHA256=' "$ROOT/install.sh"
 grep -q '@openai/codex@\$CODEX_VERSION' "$ROOT/install.sh"
 grep -q 'QWEN_FAST_ID="359d7dd4bcda"' "$ROOT/install.sh"
